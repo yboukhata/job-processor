@@ -2,6 +2,9 @@
 
 Le `job processor` est un service conçu pour traiter des tâches en arrière-plan de manière efficace et fiable.
 
+> **Ce service supporte à la fois MongoDB et PostgreSQL comme moteur de stockage.**  
+> Vous pouvez choisir le moteur de base de données le plus adapté à votre environnement en configurant l'option `databaseType` à `"mongo"` ou `"postgres"` lors de l'initialisation.
+
 Il a été développé pour le template apprentissage [Template Apprentissage](https://github.com/mission-apprentissage/template-apprentissage) et est déjà installé et pré-configuré sur celui-ci.
 
 ## Installation
@@ -16,17 +19,19 @@ Le job processor s'initialise avec l'import de la fonction `initJobProcessor()` 
 
 ```js
   initJobProcessor({
-    db: Db
-    logger: ILogger
-    jobs: Record<string, JobDef>
-    crons: Record<string, CronDef>
+    databaseType: "mongo" | "postgres",
+    db: Db,
+    logger: ILogger,
+    jobs: Record<string, JobDef>,
+    crons: Record<string, CronDef>,
     workerTags?: string[] | null
   })
 ```
 
 ## Options
 
-- **db** : Connecteur de base de données MongoDB.
+- **databaseType** : Type de base de données à utiliser (`"mongo"` ou `"postgres"`).
+- **db** : Connecteur de base de données MongoDB ou PostgreSQL.
 - **logger** : Instance de logging, `bunyan` est utilisé par défaut sur le template.
 - **jobs** : Liste des tâches à exécuter.
 - **crons** : Liste des tâches CRONs à exécuter.
@@ -48,7 +53,7 @@ type JobDef = {
 ```
 
 - **handler** : Fonction asynchrone qui exécute la tâche. Reçoit le job et un signal d'annulation.
-- **onJobExited** : Fonction asynchrone appelée lorsque la tâche se termine, avec le dernier traitement du job en paramètre. Cette méthode est également appelé en cas de crash.
+- **onJobExited** : Fonction asynchrone appelée lorsque la tâche se termine, avec le dernier traitement du job en paramètre. Cette méthode est également appelée en cas de crash.
 - **resumable** : Indique si la tâche peut être reprise après un redémarrage (par défaut: `false`).
 - **tag** : Une chaîne permettant d'attribuer un job à un worker spécifique (par défaut: `null`).
 
@@ -68,7 +73,7 @@ type CronDef = {
 
 - **cron_string** : Expression CRON définissant la fréquence d'exécution de la tâche.
 - **handler** : Fonction asynchrone exécutant la tâche selon la planification.
-- **onJobExited** : Fonction asynchrone appelée lorsque la tâche se termine, avec le dernier traitement du job en paramètre. Cette méthode est également appelé en cas de crash.
+- **onJobExited** : Fonction asynchrone appelée lorsque la tâche se termine, avec le dernier traitement du job en paramètre. Cette méthode est également appelée en cas de crash.
 - **resumable** : Indique si la tâche CRON peut être reprise après un redémarrage.
 - **checkinMargin**: Tolérance en minutes pour le délai entre l'heure planifiée et l'heure d'exécution effective.
 - **maxRuntimeInMinutes** : Durée maximale d'exécution avant interruption forcée.

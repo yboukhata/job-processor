@@ -11,8 +11,9 @@ import {
   JobStatus,
   ProcessorStatus,
   WorkerStatus,
+  SimpleJobStatus,
 } from "../../common/model.ts";
-import { getJobCollection, getWorkerCollection } from "../data/actions.ts";
+import { getJobRepository } from "../setup.ts";
 
 function buildWorkerStatus(workers: IWorker[], jobs: IJob[]): WorkerStatus[] {
   return workers.map((worker): WorkerStatus => {
@@ -31,7 +32,10 @@ function buildQueueStatus(
 ): Array<IJobsSimple | IJobsCronTask> {
   const pending = jobs
     .filter(isJobSimpleOrCronTask)
-    .filter((job) => job.status === "pending" && job.scheduled_for <= now);
+    .filter(
+      (job) =>
+        job.status === SimpleJobStatus.Pending && job.scheduled_for <= now,
+    );
 
   return pending;
 }
@@ -43,12 +47,18 @@ function buildCronStatus(jobs: IJob[]): CronStatus[] {
     const tasks = jobs
       .filter(isJobCronTask)
       .filter((job) => job.name === cron.name);
-    const scheduled = tasks.filter((job) => job.status === "pending");
+    const scheduled = tasks.filter(
+      (job) => job.status === SimpleJobStatus.Pending,
+    );
     const running = tasks.filter(
-      (job) => job.status === "running" || job.status === "paused",
+      (job) =>
+        job.status === SimpleJobStatus.Running ||
+        job.status === SimpleJobStatus.Paused,
     );
     const history = tasks.filter(
-      (job) => job.status !== "pending" && job.status !== "running",
+      (job) =>
+        job.status !== SimpleJobStatus.Pending &&
+        job.status !== SimpleJobStatus.Running,
     );
 
     return {
@@ -75,11 +85,10 @@ function buildJobStatus(jobs: IJob[]): JobStatus[] {
 
 export async function getProcessorStatus(): Promise<ProcessorStatus> {
   const now = new Date();
+  const jobRepository = getJobRepository();
   const [workers, jobs] = await Promise.all([
-    getWorkerCollection().find().toArray(),
-    getJobCollection()
-      .find({}, { sort: { scheduled_for: -1 } })
-      .toArray(),
+    jobRepository.findWorkers(),
+    jobRepository.findScheduledCronJobs(),
   ]);
 
   return {
@@ -93,14 +102,10 @@ export async function getProcessorStatus(): Promise<ProcessorStatus> {
 
 export async function getProcessorHealthcheck() {
   const now = new Date();
+  const jobRepository = getJobRepository();
   const [workers, jobs] = await Promise.all([
-    getWorkerCollection().find().toArray(),
-    getJobCollection()
-      .find(
-        { status: { $nin: ["finished", "errored"] } },
-        { sort: { scheduled_for: -1 } },
-      )
-      .toArray(),
+    jobRepository.findWorkers(),
+    jobRepository.findRunningJobs(),
   ]);
 
   return {

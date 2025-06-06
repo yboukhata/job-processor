@@ -1,7 +1,6 @@
 import { ObjectId } from "mongodb";
-import { getWorkerCollection } from "../data/actions.ts";
 import os from "node:os";
-import { getLogger, getOptions } from "../setup.ts";
+import { getLogger, getOptions, getJobRepository } from "../setup.ts";
 import { captureException, flush } from "@sentry/node";
 import { EventEmitter } from "node:events";
 
@@ -10,16 +9,13 @@ export const workerId = new ObjectId();
 export const heartbeatEvent = new EventEmitter();
 
 async function createWorker() {
-  return getWorkerCollection().updateOne(
-    { _id: workerId },
-    {
-      $set: { lastSeen: new Date(), tags: getOptions().workerTags ?? null },
-      $setOnInsert: {
-        hostname: os.hostname(),
-      },
-    },
-    { upsert: true },
-  );
+  const jobRepository = getJobRepository();
+  await jobRepository.upsertWorker({
+    _id: workerId,
+    hostname: os.hostname(),
+    lastSeen: new Date(),
+    tags: getOptions().workerTags ?? null,
+  });
 }
 
 const syncHeartbeatContext: { count: number; ctrl: AbortController | null } = {
@@ -59,18 +55,17 @@ export async function startHeartbeat(
   await createWorker();
 
   let successiveErrorsCount = 0;
+  const jobRepository = getJobRepository();
 
   const intervalId = setInterval(
     async () => {
       try {
-        const result = await getWorkerCollection().updateOne(
-          { _id: workerId },
-          { $set: { lastSeen: new Date() } },
+        const result = await jobRepository.updateWorkerHeartbeat(
+          workerId,
+          new Date(),
         );
 
-        // We were detected as died by others, just exit abrutly
-        // This can be caused by process not releasing the event loop for more than 5min
-        if (result.matchedCount === 0) {
+        if (!result) {
           const error = new Error(
             "job-processor: worker has been detected as died",
           );
@@ -80,7 +75,6 @@ export async function startHeartbeat(
         heartbeatEvent.emit("ping");
         successiveErrorsCount = 0;
       } catch (error) {
-        // Error when processor is aborted are expected
         if (signal.aborted) {
           return;
         }
@@ -98,7 +92,6 @@ export async function startHeartbeat(
 
         if (!isWorker) {
           // Force recreation in case it was removed
-          // And keep trying
           return createWorker()
             .then(() => {
               heartbeatEvent.emit("ping");
@@ -133,15 +126,13 @@ export async function startHeartbeat(
         getLogger().info("job-processor: abort requested - stopping heartbeat");
 
         if (isWorker) {
-          await getWorkerCollection()
-            .deleteOne({ _id: workerId })
-            .catch((error) => {
-              getLogger().error(
-                { error },
-                "job-processor: worker self-removal failed",
-              );
-              captureException(error, { extra: { workerId } });
-            });
+          await jobRepository.removeWorker(workerId).catch((error) => {
+            getLogger().error(
+              { error },
+              "job-processor: worker self-removal failed",
+            );
+            captureException(error, { extra: { workerId } });
+          });
         }
 
         getLogger().info("job-processor: abort requested - heartbeat stopped");

@@ -1,9 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { processorEventEmitter, runJobProcessor } from "./processor.ts";
 import { MongoClient } from "mongodb";
-import { initJobProcessor } from "../setup.ts";
-import { getJobCollection, getWorkerCollection } from "../data/actions.ts";
+import { initJobProcessor, SupportedDbType } from "../setup.ts";
 import { addJob } from "../index.ts";
+import { MongoJobRepository } from "../data/MongoJobRepository.ts";
+import { SimpleJobStatus, JobType } from "../../common/model.ts";
 
 describe("runJobProcessor", () => {
   let client: MongoClient | null;
@@ -24,6 +25,7 @@ describe("runJobProcessor", () => {
     await initJobProcessor({
       logger,
       db: client.db(),
+      databaseType: SupportedDbType.Mongo,
       jobs: {
         test: {
           handler: jobMock,
@@ -42,8 +44,14 @@ describe("runJobProcessor", () => {
   });
 
   beforeEach(async () => {
-    await getJobCollection().deleteMany({});
-    await getWorkerCollection().deleteMany({});
+    await client
+      ?.db()
+      .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+      .deleteMany({});
+    await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .deleteMany({});
   });
 
   it("should run jobs", async () => {
@@ -59,16 +67,22 @@ describe("runJobProcessor", () => {
     const teardown = runJobProcessor(ctrl.signal);
     await onContinue;
 
-    expect(await getJobCollection().find({ name: "test" }).toArray()).toEqual([
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ name: "test" })
+        .toArray(),
+    ).toEqual([
       {
         _id: expect.anything(),
         created_at: expect.any(Date),
         name: "test",
         payload: null,
         scheduled_for: expect.any(Date),
-        status: "finished",
+        status: SimpleJobStatus.Finished,
         sync: false,
-        type: "simple",
+        type: JobType.Simple,
         updated_at: expect.any(Date),
         worker_id: null,
         started_at: expect.any(Date),
@@ -99,16 +113,22 @@ describe("runJobProcessor", () => {
     const teardown = runJobProcessor(ctrl.signal);
     await onContinue;
 
-    expect(await getJobCollection().find({ name: "test" }).toArray()).toEqual([
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ name: "test" })
+        .toArray(),
+    ).toEqual([
       {
         _id: expect.anything(),
         created_at: expect.any(Date),
         name: "test",
         payload: null,
         scheduled_for: expect.any(Date),
-        status: "errored",
+        status: SimpleJobStatus.Errored,
         sync: false,
-        type: "simple",
+        type: JobType.Simple,
         updated_at: expect.any(Date),
         worker_id: null,
         started_at: expect.any(Date),
@@ -139,16 +159,22 @@ describe("runJobProcessor", () => {
     const teardown = runJobProcessor(ctrl.signal);
     await onContinue;
 
-    expect(await getJobCollection().find({ name: "test" }).toArray()).toEqual([
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ name: "test" })
+        .toArray(),
+    ).toEqual([
       {
         _id: expect.anything(),
         created_at: expect.any(Date),
         name: "test",
         payload: null,
         scheduled_for: expect.any(Date),
-        status: "errored",
+        status: SimpleJobStatus.Errored,
         sync: false,
-        type: "simple",
+        type: JobType.Simple,
         updated_at: expect.any(Date),
         worker_id: null,
         started_at: expect.any(Date),

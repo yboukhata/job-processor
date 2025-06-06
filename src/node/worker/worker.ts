@@ -1,8 +1,19 @@
 import * as Sentry from "@sentry/node";
 import { formatDuration, intervalToDuration } from "date-fns";
-import { IJobsCronTask, IJobsSimple } from "../../common/model.ts";
-import { getCronTaskJob, getSimpleJob, updateJob } from "../data/actions.ts";
-import { CronDef, ILogger, JobDef, getLogger, getOptions } from "../setup.ts";
+import {
+  IJobsCronTask,
+  IJobsSimple,
+  SimpleJobStatus,
+  JobType,
+} from "../../common/model.ts";
+import {
+  CronDef,
+  ILogger,
+  JobDef,
+  getLogger,
+  getOptions,
+  getJobRepository,
+} from "../setup.ts";
 import { workerId } from "./heartbeat.ts";
 import { notifySentryJobEnd, notifySentryJobStart } from "./sentry.ts";
 
@@ -42,19 +53,20 @@ async function onRunnerExit(
     formatDuration(intervalToDuration({ start: startDate, end: endDate })) ||
     `${ts}ms`;
 
-  const status = error ? "errored" : "finished";
-  await updateJob(job._id, {
-    status: error ? "errored" : "finished",
+  const status = error ? SimpleJobStatus.Errored : SimpleJobStatus.Finished;
+  await getJobRepository().updateJob(job._id, {
+    status: error ? SimpleJobStatus.Errored : SimpleJobStatus.Finished,
     output: { duration, result, error },
     ended_at: endDate,
     worker_id: null,
   });
   await notifySentryJobEnd(job, !error);
 
-  if (job.type === "simple") {
+  if (job.type === JobType.Simple) {
     const onJobExited = getJobSimpleDef(job)?.onJobExited ?? null;
     if (onJobExited) {
-      const updatedJob = (await getSimpleJob(job._id)) ?? job;
+      const updatedJob =
+        (await getJobRepository().getSimpleJob(job._id)) ?? job;
       try {
         await onJobExited(updatedJob);
       } catch (errored) {
@@ -65,7 +77,8 @@ async function onRunnerExit(
   } else {
     const onJobExited = getCronTaskDef(job)?.onJobExited ?? null;
     if (onJobExited) {
-      const updatedJob = (await getCronTaskJob(job._id)) ?? job;
+      const updatedJob =
+        (await getJobRepository().getCronTaskJob(job._id)) ?? job;
       try {
         await onJobExited(updatedJob);
       } catch (errored) {
@@ -88,12 +101,15 @@ function getJobAbortedCb(
       // We still wait for completion of the handler
       // but in case it didn't return in time, we still have a better status
       const resumable =
-        job.type === "simple"
+        job.type === JobType.Simple
           ? getJobSimpleDef(job)?.resumable
           : getCronTaskDef(job)?.resumable;
 
       if (resumable === true) {
-        await updateJob(job._id, { status: "paused", worker_id: null });
+        await getJobRepository().updateJob(job._id, {
+          status: SimpleJobStatus.Paused,
+          worker_id: null,
+        });
       } else {
         const error = new Error("[job-processor] Job aborted");
         Sentry.captureException(error, {
@@ -125,13 +141,13 @@ async function runner(
 
   jobLogger.info("job started");
   job.started_at = job.started_at ?? new Date();
-  job.status = "running";
+  job.status = SimpleJobStatus.Running;
   job.worker_id = workerId;
 
   const onAbort = getJobAbortedCb(job, jobLogger);
   signal.addEventListener("abort", onAbort, { once: true });
 
-  await updateJob(job._id, {
+  await getJobRepository().updateJob(job._id, {
     status: job.status,
     started_at: job.started_at,
     worker_id: job.worker_id,
@@ -140,7 +156,7 @@ async function runner(
   let result: unknown = undefined;
 
   try {
-    if (job.type === "simple") {
+    if (job.type === JobType.Simple) {
       const jobDef = getJobSimpleDef(job);
       if (!jobDef) {
         throw new Error("Job not found");
@@ -253,7 +269,7 @@ export async function reportJobCrash(
   job: IJobsCronTask | IJobsSimple,
 ): Promise<void> {
   try {
-    if (job.type === "simple") {
+    if (job.type === JobType.Simple) {
       const jobDef = getJobSimpleDef(job);
       if (!jobDef) {
         throw new Error("Job not found");

@@ -1,7 +1,6 @@
 import { MongoClient, ObjectId } from "mongodb";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { initJobProcessor } from "../setup.ts";
-import { getJobCollection } from "../data/actions.ts";
+import { initJobProcessor, SupportedDbType } from "../setup.ts";
 import { IJobsCron, IJobsCronTask } from "../index.ts";
 import {
   cronSchedulerEvent,
@@ -9,6 +8,8 @@ import {
   runCronsScheduler,
   startCronScheduler,
 } from "./crons.ts";
+import { MongoJobRepository } from "../data/MongoJobRepository.ts";
+import { CronJobStatus, JobType, SimpleJobStatus } from "../../common/model.ts";
 
 let client: MongoClient;
 
@@ -39,12 +40,12 @@ beforeEach(async () => {
 function createJobCrons(
   data: Pick<IJobsCron, "name"> &
     Partial<Pick<IJobsCron, "cron_string" | "scheduled_for">>,
-): IJobsCron {
+): Omit<IJobsCron, "_id"> & { _id: ObjectId } {
   return {
     _id: new ObjectId(),
-    type: "cron",
+    type: JobType.Cron,
     cron_string: "* * * * *",
-    status: "active",
+    status: CronJobStatus.Active,
     updated_at: now,
     created_at: now,
     scheduled_for: now,
@@ -55,10 +56,10 @@ function createJobCrons(
 function createCronTaskJob(
   data: Pick<IJobsCronTask, "name" | "status"> &
     Partial<Pick<IJobsCronTask, "worker_id" | "started_at">>,
-): IJobsCronTask {
+): Omit<IJobsCronTask, "_id"> & { _id: ObjectId } {
   return {
     _id: new ObjectId(),
-    type: "cron_task",
+    type: JobType.CronTask,
     started_at: null,
     ended_at: null,
     updated_at: now,
@@ -84,11 +85,11 @@ describe("cronsInit", () => {
     }),
   ];
   const tasks = [
-    createCronTaskJob({ name: "deletedOne", status: "running" }), // We should keep it
-    createCronTaskJob({ name: "deletedOne", status: "pending" }), // Should be removed
-    createCronTaskJob({ name: "updatedOne", status: "running" }), // We should keep it
-    createCronTaskJob({ name: "updatedOne", status: "pending" }), // Should be removed
-    createCronTaskJob({ name: "keptOne", status: "pending" }),
+    createCronTaskJob({ name: "deletedOne", status: SimpleJobStatus.Running }), // We should keep it
+    createCronTaskJob({ name: "deletedOne", status: SimpleJobStatus.Pending }), // Should be removed
+    createCronTaskJob({ name: "updatedOne", status: SimpleJobStatus.Running }), // We should keep it
+    createCronTaskJob({ name: "updatedOne", status: SimpleJobStatus.Pending }), // Should be removed
+    createCronTaskJob({ name: "keptOne", status: SimpleJobStatus.Pending }),
   ];
 
   const expectedCrons = [
@@ -96,10 +97,10 @@ describe("cronsInit", () => {
     crons[2],
     {
       _id: expect.any(ObjectId),
-      type: "cron",
+      type: JobType.Cron,
       name: "newOne",
       cron_string: "0 * * * *",
-      status: "active",
+      status: CronJobStatus.Active,
       updated_at: now,
       created_at: now,
       scheduled_for: now,
@@ -115,6 +116,7 @@ describe("cronsInit", () => {
         error: vi.fn() as any,
         child: vi.fn() as any,
       },
+      databaseType: SupportedDbType.Mongo,
       db: client.db(),
       jobs: {},
       crons: {
@@ -134,17 +136,28 @@ describe("cronsInit", () => {
     };
 
     await initJobProcessor(options);
-    await getJobCollection().insertMany([...crons, ...tasks]);
+    await client
+      ?.db()
+      .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+      .insertMany([...crons, ...tasks]);
   });
 
   it("should update crons", async () => {
     await cronsInit();
 
-    expect(await getJobCollection().find({ type: "cron" }).toArray()).toEqual(
-      expectedCrons,
-    );
     expect(
-      await getJobCollection().find({ type: "cron_task" }).toArray(),
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ type: JobType.Cron })
+        .toArray(),
+    ).toEqual(expectedCrons);
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ type: JobType.CronTask })
+        .toArray(),
     ).toEqual(expectedTasks);
   });
 
@@ -159,18 +172,32 @@ describe("cronsInit", () => {
       cronsInit(),
     ]);
 
-    expect(await getJobCollection().find({ type: "cron" }).toArray()).toEqual(
-      expectedCrons,
-    );
     expect(
-      await getJobCollection().find({ type: "cron_task" }).toArray(),
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ type: JobType.Cron })
+        .toArray(),
+    ).toEqual(expectedCrons);
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ type: JobType.CronTask })
+        .toArray(),
     ).toEqual(expectedTasks);
   });
 
   it("should support concurrency", async () => {
     // Simulate concurrency where one of the cron alreay scheduled a task
-    const newTask = createCronTaskJob({ name: "newOne", status: "pending" });
-    await getJobCollection().insertOne(newTask);
+    const newTask = createCronTaskJob({
+      name: "newOne",
+      status: SimpleJobStatus.Pending,
+    });
+    await client
+      ?.db()
+      .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+      .insertOne(newTask);
 
     await Promise.all([
       cronsInit(),
@@ -182,11 +209,19 @@ describe("cronsInit", () => {
       cronsInit(),
     ]);
 
-    expect(await getJobCollection().find({ type: "cron" }).toArray()).toEqual(
-      expectedCrons,
-    );
     expect(
-      await getJobCollection().find({ type: "cron_task" }).toArray(),
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ type: JobType.Cron })
+        .toArray(),
+    ).toEqual(expectedCrons);
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find({ type: JobType.CronTask })
+        .toArray(),
     ).toEqual([...expectedTasks, newTask]);
   });
 });
@@ -201,6 +236,7 @@ describe("runCronsScheduler", () => {
         child: vi.fn() as any,
       },
       db: client.db(),
+      databaseType: SupportedDbType.Mongo,
       jobs: {},
       crons: {
         "Daily at 9am Paris time": {
@@ -222,30 +258,39 @@ describe("runCronsScheduler", () => {
 
     vi.setSystemTime(createdAt);
 
-    await getJobCollection().insertOne({
-      _id: new ObjectId(),
-      type: "cron",
-      cron_string: "0 9 * * *",
-      status: "active",
-      updated_at: createdAt,
-      created_at: createdAt,
-      scheduled_for: createdAt,
-      name: "Daily at 9am Paris time",
-    });
+    await client
+      ?.db()
+      .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+      .insertOne({
+        _id: new ObjectId(),
+        type: JobType.Cron,
+        cron_string: "0 9 * * *",
+        status: CronJobStatus.Active,
+        updated_at: createdAt,
+        created_at: createdAt,
+        scheduled_for: createdAt,
+        name: "Daily at 9am Paris time",
+      });
 
     vi.setSystemTime(updatedAt);
 
     await runCronsScheduler();
 
-    expect(await getJobCollection().find().toArray()).toEqual([
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find()
+        .toArray(),
+    ).toEqual([
       {
         _id: expect.any(ObjectId),
         created_at: createdAt,
         cron_string: "0 9 * * *",
         name: "Daily at 9am Paris time",
         scheduled_for: nextScheduledFor1,
-        status: "active",
-        type: "cron",
+        status: CronJobStatus.Active,
+        type: JobType.Cron,
         updated_at: updatedAt,
       },
       {
@@ -255,8 +300,8 @@ describe("runCronsScheduler", () => {
         name: "Daily at 9am Paris time",
         scheduled_for: nextScheduledFor1,
         started_at: null,
-        status: "pending",
-        type: "cron_task",
+        status: SimpleJobStatus.Pending,
+        type: JobType.CronTask,
         updated_at: updatedAt,
         worker_id: null,
       },
@@ -266,15 +311,21 @@ describe("runCronsScheduler", () => {
 
     await runCronsScheduler();
 
-    expect(await getJobCollection().find().toArray()).toEqual([
+    expect(
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .find()
+        .toArray(),
+    ).toEqual([
       {
         _id: expect.any(ObjectId),
         created_at: createdAt,
         cron_string: "0 9 * * *",
         name: "Daily at 9am Paris time",
         scheduled_for: nextScheduledFor2,
-        status: "active",
-        type: "cron",
+        status: CronJobStatus.Active,
+        type: JobType.Cron,
         updated_at: nextCronScheduler,
       },
       {
@@ -284,8 +335,8 @@ describe("runCronsScheduler", () => {
         name: "Daily at 9am Paris time",
         scheduled_for: nextScheduledFor1,
         started_at: null,
-        status: "pending",
-        type: "cron_task",
+        status: SimpleJobStatus.Pending,
+        type: JobType.CronTask,
         updated_at: updatedAt,
         worker_id: null,
       },
@@ -296,8 +347,8 @@ describe("runCronsScheduler", () => {
         name: "Daily at 9am Paris time",
         scheduled_for: nextScheduledFor2,
         started_at: null,
-        status: "pending",
-        type: "cron_task",
+        status: SimpleJobStatus.Pending,
+        type: JobType.CronTask,
         updated_at: nextCronScheduler,
         worker_id: null,
       },
@@ -316,6 +367,7 @@ describe("startCronScheduler", () => {
           child: vi.fn() as any,
         },
         db: client.db(),
+        databaseType: SupportedDbType.Mongo,
         jobs: {},
         crons: {},
       };
@@ -357,10 +409,10 @@ describe("startCronScheduler", () => {
     }) => {
       return {
         _id: expect.any(ObjectId),
-        type: "cron_task",
+        type: JobType.CronTask,
         started_at: null,
         ended_at: null,
-        status: "pending",
+        status: SimpleJobStatus.Pending,
         updated_at: data.created_at,
         created_at: data.created_at,
         worker_id: null,
@@ -424,6 +476,7 @@ describe("startCronScheduler", () => {
           child: vi.fn() as any,
         },
         db: client.db(),
+        databaseType: SupportedDbType.Mongo,
         jobs: {},
         crons: {
           every2Min: {
@@ -438,7 +491,10 @@ describe("startCronScheduler", () => {
       };
 
       await initJobProcessor(options);
-      await getJobCollection().insertMany(initialCrons);
+      await client
+        ?.db()
+        .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+        .insertMany(initialCrons);
     });
 
     it("should create cron tasks", async () => {
@@ -447,13 +503,17 @@ describe("startCronScheduler", () => {
 
       expect(vi.getTimerCount()).toBe(1);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsNow);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksNow);
 
@@ -466,13 +526,17 @@ describe("startCronScheduler", () => {
       expect(new Date()).toEqual(in1Min);
       expect(vi.getTimerCount()).toBe(1);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsNow);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksNow);
 
@@ -485,13 +549,17 @@ describe("startCronScheduler", () => {
       expect(new Date()).toEqual(in2Min);
       expect(vi.getTimerCount()).toBe(1);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsIn2Min);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksIn2Min);
 
@@ -504,13 +572,17 @@ describe("startCronScheduler", () => {
       expect(new Date()).toEqual(in3Min);
       expect(vi.getTimerCount()).toBe(1);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsIn3Min);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksIn3Min);
 
@@ -529,13 +601,17 @@ describe("startCronScheduler", () => {
 
       expect(vi.getTimerCount()).toBe(5);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsNow);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksNow);
 
@@ -549,13 +625,17 @@ describe("startCronScheduler", () => {
       expect(new Date()).toEqual(in1Min);
       expect(vi.getTimerCount()).toBe(5);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsNow);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksNow);
 
@@ -569,13 +649,17 @@ describe("startCronScheduler", () => {
       expect(new Date()).toEqual(in2Min);
       expect(vi.getTimerCount()).toBe(5);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsIn2Min);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksIn2Min);
 
@@ -589,13 +673,17 @@ describe("startCronScheduler", () => {
       expect(new Date()).toEqual(in3Min);
       expect(vi.getTimerCount()).toBe(5);
       expect(
-        await getJobCollection()
-          .find({ type: "cron" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.Cron }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedCronsIn3Min);
       expect(
-        await getJobCollection()
-          .find({ type: "cron_task" }, { sort: { scheduled_for: 1 } })
+        await client
+          ?.db()
+          .collection(MongoJobRepository.JOB_COLLECTION_NAME)
+          .find({ type: JobType.CronTask }, { sort: { scheduled_for: 1 } })
           .toArray(),
       ).toEqual(expectedTasksIn3Min);
 

@@ -1,6 +1,10 @@
-import { Db } from "mongodb";
+import { Db as MongoDb } from "mongodb";
+import { Client as PgClient } from "pg";
+import { IJobRepository } from "./data/IJobRepository.ts";
+import { MongoJobRepository } from "./data/MongoJobRepository.ts";
+import { PostgresJobRepository } from "./data/PostgresJobRepository.ts";
 import { IJobsCronTask, IJobsSimple } from "../common/model.ts";
-import { configureDb } from "./data/actions.ts";
+import { workerId } from "./worker/heartbeat.ts";
 
 export interface ILogger {
   debug(msg: string): unknown;
@@ -29,8 +33,16 @@ export type CronDef<T extends string = string> = {
   tag?: T | null;
 };
 
+export enum SupportedDbType {
+  Mongo = "mongo",
+  Postgres = "postgres",
+}
+
+export type SupportedDbClient = MongoDb | PgClient;
+
 export type JobProcessorOptions<T extends string = string> = {
-  db: Db;
+  databaseType: SupportedDbType;
+  db: SupportedDbClient;
   logger: ILogger;
   jobs: Record<string, JobDef>;
   crons: Record<string, CronDef>;
@@ -38,17 +50,24 @@ export type JobProcessorOptions<T extends string = string> = {
 };
 
 let options: JobProcessorOptions | null = null;
+let jobRepository: IJobRepository | null = null;
 
 export function getOptions(): JobProcessorOptions {
-  if (!options) {
-    throw new Error("Job processor is not setup");
-  }
-
+  if (!options) throw new Error("Job processor is not setup");
   return options;
 }
 
 export function getLogger(): ILogger {
   return getOptions().logger;
+}
+
+export function getJobRepository(): IJobRepository {
+  if (!jobRepository) {
+    throw new Error(
+      "Database adapter is not initialized, please call initJobProcessor first",
+    );
+  }
+  return jobRepository;
 }
 
 export async function initJobProcessor(opts: JobProcessorOptions) {
@@ -57,5 +76,15 @@ export async function initJobProcessor(opts: JobProcessorOptions) {
   }
 
   options = opts;
-  await configureDb();
+
+  // Instantiate the correct adapter based on databaseType
+  if (opts.databaseType === SupportedDbType.Mongo) {
+    jobRepository = new MongoJobRepository(opts.db as MongoDb, workerId);
+  } else if (opts.databaseType === SupportedDbType.Postgres) {
+    jobRepository = new PostgresJobRepository(opts.db as PgClient, workerId);
+  } else {
+    throw new Error("Unsupported databaseType");
+  }
+
+  await jobRepository.configureDb();
 }

@@ -1,8 +1,7 @@
 import { captureException } from "@sentry/node";
 import { IJobsSimple } from "../common/model.ts";
 import { cronsInit, startCronScheduler } from "./crons/crons.ts";
-import { createJobSimple } from "./data/actions.ts";
-import { getLogger } from "./setup.ts";
+import { getJobRepository, getLogger } from "./setup.ts";
 import { startHeartbeat, startSyncHeartbeat } from "./worker/heartbeat.ts";
 import { runJobProcessor } from "./worker/processor.ts";
 import { executeJob } from "./worker/worker.ts";
@@ -17,7 +16,7 @@ export async function scheduleJob({
   payload,
   scheduled_for = new Date(),
 }: ScheduleJobParams): Promise<IJobsSimple> {
-  const job = await createJobSimple({
+  const job = await getJobRepository().createJobSimple({
     name,
     payload,
     scheduled_for,
@@ -31,7 +30,7 @@ export async function createAndRunJob({
   name,
   payload,
 }: Pick<IJobsSimple, "name" | "payload">): Promise<number> {
-  const job = await createJobSimple({
+  const job = await getJobRepository().createJobSimple({
     name,
     payload,
     scheduled_for: new Date(),
@@ -121,4 +120,6 @@ export {
   getProcessorStatus,
 } from "./monitoring/monitoring.ts";
 
-export { getSimpleJob } from "./data/actions.ts";
+export async function getSimpleJob(id: string): Promise<IJobsSimple | null> {
+  return getJobRepository().getSimpleJob(id);
+}
