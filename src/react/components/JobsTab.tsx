@@ -20,8 +20,12 @@ export function JobsTab(
 ) {
   const rows: JobRow[] = useMemo(() => {
     return props.jobs.map((job): JobRow => {
-      const lastRun = job.tasks.find((task) => task.status !== "pending");
-      const nextRun = job.tasks.find((task) => task.status === "pending");
+      const lastRun = job.tasks.find(
+        (task) => task.status !== SimpleJobStatus.Pending,
+      );
+      const nextRun = job.tasks.find(
+        (task) => task.status === SimpleJobStatus.Pending,
+      );
 
       return {
         _id: job.name,

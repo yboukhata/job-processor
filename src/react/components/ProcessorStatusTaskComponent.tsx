@@ -16,17 +16,17 @@ export function getTaskStatus(task: Jsonify<IJob> | null | undefined) {
   if (!task) return "Jamais exécuté";
 
   switch (task.status) {
-    case "pending":
+    case SimpleJobStatus.Pending:
       return new Date(task.scheduled_for).getTime() > Date.now()
         ? "Programmé"
         : "En attente";
-    case "running":
+    case SimpleJobStatus.Running:
       return "En cours";
-    case "finished":
+    case SimpleJobStatus.Finished:
       return "Terminé";
-    case "errored":
+    case SimpleJobStatus.Errored:
       return "Erreur";
-    case "paused":
+    case SimpleJobStatus.Paused:
       return "En pause";
     default:
       return "Inconnu";
@@ -35,7 +35,7 @@ export function getTaskStatus(task: Jsonify<IJob> | null | undefined) {
 
 type ProcessorStatusTaskComponentProps = {
   status: ProcessorStatusJson | null;
-  type: "cron" | "job";
+  type: JobType.Cron | "job";
   baseUrl: string;
   name: string;
   id: string;
@@ -103,7 +103,7 @@ export function ProcessorStatusTaskComponent(
       <Typography>
         Durée: <strong>{task.output?.duration ?? " - "}</strong>
       </Typography>
-      {task.type === "simple" && task.payload && (
+      {task.type === JobType.Simple && task.payload && (
         <Accordion label="Paramètres">
           <code>
             <pre>{JSON.stringify(task.payload, null, 2)}</pre>

@@ -1,12 +1,5 @@
 import { CronExpressionParser } from "cron-parser";
-import { CronDef, getLogger, getOptions } from "../setup.ts";
-import {
-  createJobCronTask,
-  findJobs,
-  getJobCollection,
-} from "../data/actions.ts";
-import { IJobsCron } from "../../common/model.ts";
-import { ObjectId } from "mongodb";
+import { CronDef, getLogger, getOptions, getJobRepository } from "../setup.ts";
 import { captureException } from "@sentry/node";
 import { EventEmitter } from "node:events";
 
@@ -45,101 +38,23 @@ export async function cronsInit() {
 
   const CRONS = getCrons();
 
-  const cronDeleteResult = await getJobCollection().deleteMany({
-    name: { $nin: CRONS.map((c) => c.name) },
-    type: "cron",
-  });
-  const cronTaskResult = await getJobCollection().deleteMany({
-    name: { $nin: CRONS.map((c) => c.name) },
-    status: "pending",
-    type: "cron_task",
-  });
-
-  if (cronDeleteResult.deletedCount > 0 || cronTaskResult.deletedCount > 0) {
-    getLogger().info(
-      { cronDeleteResult, cronTaskResult },
-      `job_processor: old cron cleanup`,
-    );
-  }
+  // Use adapter for job deletion
+  const jobRepository = getJobRepository();
+  await jobRepository.deleteCronsNotIn(CRONS.map((c) => c.name));
 
   for (const cron of CRONS) {
-    // Atomic operation to prevent concurrency conflict
-
     const now = new Date();
-    const result = await getJobCollection().findOneAndUpdate(
-      {
-        name: cron.name,
-        type: "cron",
-      },
-      {
-        $set: {
-          cron_string: cron.cron_string,
-          updated_at: now,
-        },
-        $setOnInsert: {
-          _id: new ObjectId(),
-          name: cron.name,
-          type: "cron",
-          status: "active",
-          created_at: now,
-          scheduled_for: now,
-        },
-      },
-      {
-        returnDocument: "before",
-        upsert: true,
-        includeResultMetadata: false,
-      },
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const oldJob: IJobsCron | null = result as any;
-
-    if (oldJob === null) {
-      // upsert is not atomic, make sure we didn't created a duplicate
-      const existingCrons = await getJobCollection()
-        .find(
-          {
-            name: cron.name,
-            type: "cron",
-          },
-          {
-            sort: { _id: 1 },
-          },
-        )
-        .toArray();
-
-      if (existingCrons.length > 1 && existingCrons[0]) {
-        // Just keep the first one
-        const deleteResult = await getJobCollection().deleteMany({
-          name: cron.name,
-          type: "cron",
-          _id: { $ne: existingCrons[0]._id },
-        });
-        getLogger().info(
-          { existingCrons, cron, deleteResult },
-          `job_processor: cron concurrency issue`,
-        );
-      }
-    }
+    // Use adapter for upsert/find/update
+    const oldJob = await jobRepository.upsertCronJob(cron, now);
 
     if (oldJob !== null && oldJob.cron_string !== cron.cron_string) {
-      const updateResult = await getJobCollection().updateOne(
-        { _id: oldJob._id },
-        { $set: { scheduled_for: now, updated_at: now } },
-      );
-      const deleteResult = await getJobCollection().deleteMany({
-        name: cron.name,
-        status: "pending",
-        type: "cron_task",
-      });
+      await jobRepository.updateCronSchedule(oldJob._id, now);
+      await jobRepository.deletePendingCronTasks(cron.name);
       getLogger().info(
         {
           oldJob: { ...oldJob, _id: oldJob._id.toString() },
           now,
           cron,
-          updateResult,
-          deleteResult,
         },
         `job_processor: cron schedule updated`,
       );
@@ -153,28 +68,22 @@ export async function runCronsScheduler(): Promise<void> {
   getLogger().debug(`Crons - Check and run crons`);
 
   const now = new Date();
-  const crons = await findJobs<IJobsCron>(
-    {
-      type: "cron",
-      scheduled_for: { $lte: now },
-    },
-    { sort: { scheduled_for: 1 } },
-  );
+  const jobRepository = getJobRepository();
+  const crons = await jobRepository.findDueCronJobs(now);
 
   for (const cron of crons) {
     const next = parseCronString(now, cron.cron_string ?? "", {
       currentDate: cron.scheduled_for,
     });
 
-    // Ensure no concurrent worker scheduled this cron already
-    const result = await getJobCollection().updateOne(
-      { _id: cron._id, scheduled_for: cron.scheduled_for },
-      { $set: { scheduled_for: next, updated_at: new Date() } },
+    // Use adapter for update
+    const updated = await jobRepository.updateCronScheduledFor(
+      cron._id,
+      cron.scheduled_for,
+      next,
     );
-
-    // Otherwise is already scheduled by another worker
-    if (result.modifiedCount > 0) {
-      await createJobCronTask({
+    if (updated) {
+      await jobRepository.createJobCronTask({
         name: cron.name,
         scheduled_for: next,
       });

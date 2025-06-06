@@ -1,17 +1,19 @@
 import { MongoClient, ObjectId } from "mongodb";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { initJobProcessor } from "../setup.ts";
+import { initJobProcessor, SupportedDbType } from "../setup.ts";
 import {
   heartbeatEvent,
   startHeartbeat,
   startSyncHeartbeat,
   workerId,
 } from "./heartbeat.ts";
-import { getWorkerCollection } from "../data/actions.ts";
-import { IWorker } from "../index.ts";
+import { IWorker as IWorkerBase } from "../index.ts";
+import { MongoJobRepository } from "../data/MongoJobRepository.ts";
 
 let client: MongoClient | null;
 const startDate = new Date("2023-11-17T11:00:00.000Z");
+
+type IWorker = Omit<IWorkerBase, "_id"> & { _id: ObjectId };
 const otherWorkers: IWorker[] = [
   {
     _id: new ObjectId(),
@@ -40,6 +42,7 @@ beforeAll(async () => {
       child: vi.fn() as any,
     },
     db: client.db(),
+    databaseType: SupportedDbType.Mongo,
     jobs: {},
     crons: {},
   });
@@ -50,8 +53,14 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await getWorkerCollection().deleteMany({});
-  await getWorkerCollection().insertMany(otherWorkers);
+  await client
+    ?.db()
+    .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+    .deleteMany({});
+  await client
+    ?.db()
+    .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+    .insertMany(otherWorkers);
 
   vi.useFakeTimers();
   vi.setSystemTime(startDate);
@@ -68,9 +77,12 @@ describe("startHeartbeat", () => {
     expect(workerId).toEqual(expect.any(ObjectId));
 
     // Once started, it should be referenced in worker collection without affecting other workers
-    let workers = await getWorkerCollection()
-      .find({}, { sort: { lastSeen: 1 } })
-      .toArray();
+    let workers =
+      (await client
+        ?.db()
+        .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+        .find({}, { sort: { lastSeen: 1 } })
+        .toArray()) || [];
     expect(workers).toHaveLength(3);
     expect(workers[0]).toEqual(otherWorkers[0]);
     expect(workers[1]).toEqual(otherWorkers[1]);
@@ -90,7 +102,12 @@ describe("startHeartbeat", () => {
     await onPing;
 
     // Expect lastSeen has been updated
-    workers = await getWorkerCollection().find({}).toArray();
+    workers =
+      (await client
+        ?.db()
+        .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+        .find({})
+        .toArray()) || [];
     expect(workers).toHaveLength(3);
     expect(workers[0]).toEqual(otherWorkers[0]);
     expect(workers[1]).toEqual(otherWorkers[1]);
@@ -107,7 +124,12 @@ describe("startHeartbeat", () => {
     await onPing;
 
     // Expect lastSeen has been updated
-    workers = await getWorkerCollection().find({}).toArray();
+    workers =
+      (await client
+        ?.db()
+        .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+        .find({})
+        .toArray()) || [];
     expect(workers).toHaveLength(3);
     expect(workers[0]).toEqual(otherWorkers[0]);
     expect(workers[1]).toEqual(otherWorkers[1]);
@@ -122,7 +144,12 @@ describe("startHeartbeat", () => {
     await new Promise((resolve) => heartbeatEvent.once("stop", resolve));
     expect(vi.getTimerCount()).toBe(0);
 
-    workers = await getWorkerCollection().find({}).toArray();
+    workers =
+      (await client
+        ?.db()
+        .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+        .find({})
+        .toArray()) || [];
     expect(workers).toHaveLength(2);
     expect(workers[0]).toEqual(otherWorkers[0]);
     expect(workers[1]).toEqual(otherWorkers[1]);
@@ -133,7 +160,10 @@ describe("startHeartbeat", () => {
     await startHeartbeat(true, abortController.signal);
     expect(workerId).toEqual(expect.any(ObjectId));
 
-    await getWorkerCollection().deleteOne({ _id: workerId });
+    await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .deleteOne({ _id: workerId });
 
     // First interval
     const onFail1 = new Promise((resolve) => {
@@ -164,7 +194,10 @@ describe("startHeartbeat", () => {
     await startHeartbeat(true, abortController.signal);
     expect(workerId).toEqual(expect.any(ObjectId));
 
-    await getWorkerCollection().deleteOne({ _id: workerId });
+    await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .deleteOne({ _id: workerId });
 
     // First interval
     const onFail1 = new Promise((resolve) => {
@@ -181,12 +214,15 @@ describe("startHeartbeat", () => {
     await expect(onFail2).resolves.toBeUndefined();
 
     // Error should be resolved
-    await getWorkerCollection().insertOne({
-      _id: workerId,
-      lastSeen: new Date(),
-      hostname: "worker_1",
-      tags: null,
-    });
+    await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .insertOne({
+        _id: workerId,
+        lastSeen: new Date(),
+        hostname: "worker_1",
+        tags: null,
+      });
 
     // Last interval
     const onPing1 = new Promise((resolve) => {
@@ -202,7 +238,10 @@ describe("startHeartbeat", () => {
     await vi.runOnlyPendingTimersAsync();
     await expect(onPing2).resolves.toBeUndefined();
 
-    await getWorkerCollection().deleteOne({ _id: workerId });
+    await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .deleteOne({ _id: workerId });
 
     // First interval
     const onFail3 = new Promise((resolve) => {
@@ -233,7 +272,10 @@ describe("startHeartbeat", () => {
     await startHeartbeat(false, abortController.signal);
     expect(workerId).toEqual(expect.any(ObjectId));
 
-    await getWorkerCollection().deleteOne({ _id: workerId });
+    await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .deleteOne({ _id: workerId });
 
     // First interval
     const onFail1 = new Promise((resolve) => {
@@ -258,9 +300,12 @@ describe("startHeartbeat", () => {
     expect(vi.getTimerCount()).toBe(1);
 
     // Expect worker has been re-created
-    let workers = await getWorkerCollection()
-      .find({}, { sort: { lastSeen: 1 } })
-      .toArray();
+    let workers =
+      (await client
+        ?.db()
+        .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+        .find({}, { sort: { lastSeen: 1 } })
+        .toArray()) || [];
     expect(workers).toHaveLength(3);
     expect(workers[0]).toEqual(otherWorkers[0]);
     expect(workers[1]).toEqual(otherWorkers[1]);
@@ -278,7 +323,12 @@ describe("startHeartbeat", () => {
     await onStop;
     expect(vi.getTimerCount()).toBe(0);
 
-    workers = await getWorkerCollection().find({}).toArray();
+    workers =
+      (await client
+        ?.db()
+        .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+        .find({})
+        .toArray()) || [];
     // When not ran in worker mode, we should not delete worker
     expect(workers).toHaveLength(3);
     expect(workers[0]).toEqual(otherWorkers[0]);
@@ -294,7 +344,10 @@ describe("startHeartbeat", () => {
 
 describe("startSyncHeartbeat", () => {
   it("should manage concurrency", async () => {
-    let worker = await getWorkerCollection().findOne({ _id: workerId });
+    let worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
     expect(worker).toBe(null);
 
     // 2 Jobs starting concurrently
@@ -304,8 +357,11 @@ describe("startSyncHeartbeat", () => {
     ]);
 
     // Once started, worker should exists
-    worker = await getWorkerCollection().findOne({ _id: workerId });
-    expect(worker?.lastSeen).toEqual(startDate);
+    worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
+    expect(worker?.["lastSeen"]).toEqual(startDate);
 
     // It should have registered interval to update timer
     expect(vi.getTimerCount()).toBe(1);
@@ -316,8 +372,13 @@ describe("startSyncHeartbeat", () => {
     await onPing;
 
     // Expect lastSeen has been updated
-    worker = await getWorkerCollection().findOne({ _id: workerId });
-    expect(worker?.lastSeen).toEqual(new Date(startDate.getTime() + 30_000));
+    worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
+    expect(worker?.["lastSeen"]).toEqual(
+      new Date(startDate.getTime() + 30_000),
+    );
 
     // Job #2 stops
     finallyCb2();
@@ -331,8 +392,13 @@ describe("startSyncHeartbeat", () => {
     await onPing;
 
     // Expect lastSeen has been updated
-    worker = await getWorkerCollection().findOne({ _id: workerId });
-    expect(worker?.lastSeen).toEqual(new Date(startDate.getTime() + 60_000));
+    worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
+    expect(worker?.["lastSeen"]).toEqual(
+      new Date(startDate.getTime() + 60_000),
+    );
 
     // New job starting
     const finallyCb3 = await startSyncHeartbeat();
@@ -343,8 +409,13 @@ describe("startSyncHeartbeat", () => {
     await onPing;
 
     // Expect lastSeen has been updated
-    worker = await getWorkerCollection().findOne({ _id: workerId });
-    expect(worker?.lastSeen).toEqual(new Date(startDate.getTime() + 90_000));
+    worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
+    expect(worker?.["lastSeen"]).toEqual(
+      new Date(startDate.getTime() + 90_000),
+    );
 
     // Job #1 stops
     finallyCb1();
@@ -358,8 +429,13 @@ describe("startSyncHeartbeat", () => {
     await onPing;
 
     // Expect lastSeen has been updated
-    worker = await getWorkerCollection().findOne({ _id: workerId });
-    expect(worker?.lastSeen).toEqual(new Date(startDate.getTime() + 120_000));
+    worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
+    expect(worker?.["lastSeen"]).toEqual(
+      new Date(startDate.getTime() + 120_000),
+    );
 
     let onStop = new Promise((resolve) => heartbeatEvent.once("stop", resolve));
     // Job #3 stops
@@ -370,7 +446,10 @@ describe("startSyncHeartbeat", () => {
 
     expect(vi.getTimerCount()).toBe(0);
 
-    worker = await getWorkerCollection().findOne({ _id: workerId });
+    worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
     expect(worker).not.toBe(null);
 
     // 2 Jobs starting concurrently
@@ -383,8 +462,13 @@ describe("startSyncHeartbeat", () => {
     expect(vi.getTimerCount()).toBe(1);
 
     // Expect worker has been created
-    worker = await getWorkerCollection().findOne({ _id: workerId });
-    expect(worker?.lastSeen).toEqual(new Date(startDate.getTime() + 120_000));
+    worker = await client
+      ?.db()
+      .collection(MongoJobRepository.WORKER_COLLECTION_NAME)
+      .findOne({ _id: workerId });
+    expect(worker?.["lastSeen"]).toEqual(
+      new Date(startDate.getTime() + 120_000),
+    );
 
     onStop = new Promise((resolve) => heartbeatEvent.once("stop", resolve));
     // Jobs stopping concurrently

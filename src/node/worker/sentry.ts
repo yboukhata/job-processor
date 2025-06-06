@@ -1,7 +1,6 @@
 import { captureCheckIn } from "@sentry/node";
 import { IJob, isJobCronTask } from "../../common/model.ts";
-import { getJobCollection } from "../data/actions.ts";
-import { getLogger, getOptions } from "../setup.ts";
+import { getLogger, getOptions, getJobRepository } from "../setup.ts";
 
 export const notifySentryJobStart = async (job: IJob) => {
   if (!isJobCronTask(job)) {
@@ -22,10 +21,8 @@ export const notifySentryJobStart = async (job: IJob) => {
     },
     monitorConfig,
   );
-  await getJobCollection().updateOne(
-    { _id: job._id },
-    { $set: { sentry_id: checkInId } },
-  );
+  // Use adapter to update the job
+  await getJobRepository().updateJob(job._id, { sentry_id: checkInId });
 };
 
 export const notifySentryJobEnd = async (job: IJob, isSuccess: boolean) => {
@@ -40,7 +37,8 @@ export const notifySentryJobEnd = async (job: IJob, isSuccess: boolean) => {
     );
     return;
   }
-  const dbJob = await getJobCollection().findOne({ _id: job._id });
+  // Use adapter to get the job
+  const dbJob = await getJobRepository().getCronTaskJob(job._id);
   if (!dbJob) {
     getLogger().error({ _id: job._id }, `unexpected: could not find job`);
     return;
